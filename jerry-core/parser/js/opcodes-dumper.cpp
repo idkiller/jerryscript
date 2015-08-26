@@ -21,6 +21,93 @@
 
 static idx_t temp_name, max_temp_name;
 
+/**
+ * Bit field, indicating which of registers are free or occupied. Each bit of the buffer corresponds to one
+ * general register in the following way:
+ *
+ * free_regs_mask[0] bit 0   -   OPCODE_REG_GENERAL_FIRST
+ * free_regs_mask[0] bit 1   -   OPCODE_REG_GENERAL_FIRST + 1
+ * ....
+ * free_regs_mask[0] bit 63  -   OPCODE_REG_GENERAL_FIRST + 63
+ * free_regs_mask[1] bit 0   -   OPCODE_REG_GENERAL_FIRST + 64
+ * ....
+ *
+ * If bit is set to 1, the corresponding register is occupied, otherwise it could be used.
+ */
+uint64_t free_regs_mask[2];
+
+JERRY_STATIC_ASSERT (sizeof (free_regs_mask) * JERRY_BITSINBYTE >= OPCODE_REG_GENERAL_LAST - OPCODE_REG_GENERAL_FIRST);
+
+#define REGS_IN_QUAD_WORD 64
+#define GENERALS_REGS_COUNT (OPCODE_REG_GENERAL_LAST - OPCODE_REG_GENERAL_FIRST + 1)
+
+/**
+ * Status of a general register: free/occupied
+ */
+typedef enum
+{
+  REG_FREE,
+  REG_OCCUPIED
+} reg_status_t;
+
+/**
+ * Sets status of a general register in free_regs_mask bit field
+ *
+ */
+static void
+set_reg_status (idx_t reg, /**< register number, register out of the range OPCODE_REG_GENERAL_FIRST -
+                            * OPCODE_REG_GENERAL_LAST are ignored */
+                reg_status_t reg_status) /**< status of the register */
+{
+  if (!(reg >= OPCODE_REG_GENERAL_FIRST && reg <= OPCODE_REG_GENERAL_LAST))
+  {
+    return;
+  }
+
+  uint64_t *free_regs_mask_p;
+  reg = (idx_t) (reg - OPCODE_REG_GENERAL_FIRST);
+  if (reg >= REGS_IN_QUAD_WORD)
+  {
+    reg = (idx_t) (reg - REGS_IN_QUAD_WORD);
+    free_regs_mask_p = &free_regs_mask[1];
+  }
+  else
+  {
+    free_regs_mask_p = &free_regs_mask[0];
+  }
+
+  uint64_t shifted_value = (uint64_t) 1 << reg;
+  if (reg_status)
+  {
+    (*free_regs_mask_p) |= shifted_value;
+  }
+  else
+  {
+    (*free_regs_mask_p) &= ~shifted_value;
+  }
+} /* set_reg_status */
+
+/**
+ * Find a free register in free_regs_mask bit field
+ */
+static idx_t
+find_free_reg (void)
+{
+  for (unsigned int i = 0; i < sizeof (free_regs_mask) / sizeof (free_regs_mask[0]); ++i)
+  {
+    for (idx_t reg = 0; reg < REGS_IN_QUAD_WORD && (reg + i * REGS_IN_QUAD_WORD) < GENERALS_REGS_COUNT; reg++)
+    {
+      if ((((free_regs_mask[i]) >> reg) & 1) == 0)
+      {
+        free_regs_mask[i] |= (uint64_t) 1 << reg;
+        return (idx_t) (reg + i * REGS_IN_QUAD_WORD + OPCODE_REG_GENERAL_FIRST);
+      }
+    }
+  }
+
+  return (idx_t) (OPCODE_REG_GENERAL_LAST + 1);
+} /* find_free_reg */
+
 enum
 {
   U8_global_size
@@ -129,7 +216,7 @@ reset_temp_name (void)
 static idx_t
 next_temp_name (void)
 {
-  idx_t next_reg = temp_name++;
+  idx_t next_reg = temp_name;
 
   if (next_reg > OPCODE_REG_GENERAL_LAST)
   {
@@ -137,8 +224,20 @@ next_temp_name (void)
      * FIXME:
      *       Implement mechanism, allowing reusage of register variables
      */
-    PARSE_ERROR (JSP_EARLY_ERROR_SYNTAX, "Not enough register variables", LIT_ITERATOR_POS_ZERO);
+
+    next_reg = find_free_reg ();
+    if (next_reg  > OPCODE_REG_GENERAL_LAST)
+    {
+      PARSE_ERROR (JSP_EARLY_ERROR_SYNTAX, "Not enough register variables", LIT_ITERATOR_POS_ZERO);
+    }
+    else
+    {
+      return next_reg;
+    }
   }
+
+  temp_name++;
+  set_reg_status (next_reg, REG_OCCUPIED);
 
   if (max_temp_name < next_reg)
   {
@@ -386,6 +485,12 @@ dump_double_address (vm_instr_t (*getop) (idx_t, idx_t), operand res, operand ob
         {
           const vm_instr_t instr = getop (LITERAL_TO_REWRITE, obj.data.uid);
           serializer_dump_op_meta (create_op_meta_100 (instr, res.data.lit_id));
+          /*
+           * Instructions are generated in such way that tmp registers are used only once in
+           * right hand side of double and triple address instructions.
+           * After usage they could be marked as free and reused in case of insufficient registers.
+           */
+          set_reg_status (obj.data.uid, REG_FREE);
           break;
         }
       }
@@ -405,6 +510,7 @@ dump_double_address (vm_instr_t (*getop) (idx_t, idx_t), operand res, operand ob
         {
           const vm_instr_t instr = getop (res.data.uid, obj.data.uid);
           serializer_dump_op_meta (create_op_meta_000 (instr));
+          set_reg_status (obj.data.uid, REG_FREE);
           break;
         }
       }
@@ -436,6 +542,7 @@ dump_triple_address (vm_instr_t (*getop) (idx_t, idx_t, idx_t), operand res, ope
             {
               const vm_instr_t instr = getop (LITERAL_TO_REWRITE, LITERAL_TO_REWRITE, rhs.data.uid);
               serializer_dump_op_meta (create_op_meta_110 (instr, res.data.lit_id, lhs.data.lit_id));
+              set_reg_status (rhs.data.uid, REG_FREE);
               break;
             }
           }
@@ -455,9 +562,11 @@ dump_triple_address (vm_instr_t (*getop) (idx_t, idx_t, idx_t), operand res, ope
             {
               const vm_instr_t instr = getop (LITERAL_TO_REWRITE, lhs.data.uid, rhs.data.uid);
               serializer_dump_op_meta (create_op_meta_100 (instr, res.data.lit_id));
+              set_reg_status (rhs.data.uid, REG_FREE);
               break;
             }
           }
+          set_reg_status (lhs.data.uid, REG_FREE);
           break;
         }
       }
@@ -481,6 +590,7 @@ dump_triple_address (vm_instr_t (*getop) (idx_t, idx_t, idx_t), operand res, ope
             {
               const vm_instr_t instr = getop (res.data.uid, LITERAL_TO_REWRITE, rhs.data.uid);
               serializer_dump_op_meta (create_op_meta_010 (instr, lhs.data.lit_id));
+              set_reg_status (rhs.data.uid, REG_FREE);
               break;
             }
           }
@@ -500,9 +610,11 @@ dump_triple_address (vm_instr_t (*getop) (idx_t, idx_t, idx_t), operand res, ope
             {
               const vm_instr_t instr = getop (res.data.uid, lhs.data.uid, rhs.data.uid);
               serializer_dump_op_meta (create_op_meta_000 (instr));
+              set_reg_status (rhs.data.uid, REG_FREE);
               break;
             }
           }
+          set_reg_status (lhs.data.uid, REG_FREE);
           break;
         }
       }
