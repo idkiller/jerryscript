@@ -41,13 +41,46 @@
 #ifdef JERRY_VALGRIND
 # include "memcheck.h"
 
-# define VALGRIND_NOACCESS_SPACE(p, s)  (void)VALGRIND_MAKE_MEM_NOACCESS((p), (s))
-# define VALGRIND_UNDEFINED_SPACE(p, s) (void)VALGRIND_MAKE_MEM_UNDEFINED((p), (s))
-# define VALGRIND_DEFINED_SPACE(p, s)   (void)VALGRIND_MAKE_MEM_DEFINED((p), (s))
+/**
+ * Tells whether a pool manager allocator request is in progress.
+ */
+static bool valgrind_mempool_request = false;
+
+/**
+ * Called by pool manager before a heap allocation or free.
+ */
+void mem_heap_valgrind_mempool_request (void)
+{
+  valgrind_mempool_request = true;
+} /* mem_heap_valgrind_mempool_request */
+
+# define VALGRIND_NOACCESS_SPACE(p, s)   VALGRIND_MAKE_MEM_NOACCESS((p), (s))
+# define VALGRIND_UNDEFINED_SPACE(p, s)  VALGRIND_MAKE_MEM_UNDEFINED((p), (s))
+# define VALGRIND_DEFINED_SPACE(p, s)    VALGRIND_MAKE_MEM_DEFINED((p), (s))
+
+# define VALGRIND_CHECK_MEMPOOL_REQUEST \
+  bool mempool_request = valgrind_mempool_request; \
+  valgrind_mempool_request = false
+
+# define VALGRIND_MALLOCLIKE_SPACE(p, s) \
+  if (!mempool_request) \
+  { \
+    VALGRIND_MALLOCLIKE_BLOCK((p), (s), 0, 0); \
+  }
+
+# define VALGRIND_FREELIKE_SPACE(p) \
+  if (!mempool_request) \
+  { \
+    VALGRIND_FREELIKE_BLOCK((p), 0); \
+  }
+
 #else /* JERRY_VALGRIND */
 # define VALGRIND_NOACCESS_SPACE(p, s)
 # define VALGRIND_UNDEFINED_SPACE(p, s)
 # define VALGRIND_DEFINED_SPACE(p, s)
+# define VALGRIND_CHECK_MEMPOOL_REQUEST
+# define VALGRIND_MALLOCLIKE_SPACE(p, s)
+# define VALGRIND_FREELIKE_SPACE(p)
 #endif /* JERRY_VALGRIND */
 
 /**
@@ -489,6 +522,8 @@ mem_heap_alloc_block_try_give_memory_back (size_t size_in_bytes, /**< size of re
                                                                                  *   (one-chunked or general) */
                                            mem_heap_alloc_term_t alloc_term) /**< expected allocation term */
 {
+  VALGRIND_CHECK_MEMPOOL_REQUEST;
+
   size_t chunks = mem_get_block_chunks_count_from_data_size (size_in_bytes);
   if ((mem_heap_allocated_chunks + chunks) * MEM_HEAP_CHUNK_SIZE >= mem_heap_limit)
   {
@@ -499,6 +534,7 @@ mem_heap_alloc_block_try_give_memory_back (size_t size_in_bytes, /**< size of re
 
   if (likely (data_space_p != NULL))
   {
+    VALGRIND_MALLOCLIKE_SPACE (data_space_p, size_in_bytes);
     return data_space_p;
   }
 
@@ -512,6 +548,7 @@ mem_heap_alloc_block_try_give_memory_back (size_t size_in_bytes, /**< size of re
 
     if (data_space_p != NULL)
     {
+      VALGRIND_MALLOCLIKE_SPACE (data_space_p, size_in_bytes);
       return data_space_p;
     }
   }
@@ -576,6 +613,8 @@ mem_heap_alloc_chunked_block (mem_heap_alloc_term_t alloc_term) /**< expected al
 void
 mem_heap_free_block (void *ptr) /**< pointer to beginning of data space of the block */
 {
+  VALGRIND_CHECK_MEMPOOL_REQUEST;
+
   uint8_t *uint8_ptr = (uint8_t*) ptr;
 
   /* checking that uint8_ptr points to the heap */
@@ -657,6 +696,7 @@ mem_heap_free_block (void *ptr) /**< pointer to beginning of data space of the b
   VALGRIND_CHECK_MEM_IS_ADDRESSABLE (ptr, mem_heap_allocated_bytes[chunk_index]);
 #endif /* JERRY_VALGRIND */
 
+  VALGRIND_FREELIKE_SPACE (ptr);
   VALGRIND_NOACCESS_SPACE (ptr, chunks * MEM_HEAP_CHUNK_SIZE);
 
   JERRY_ASSERT (mem_heap_allocated_chunks >= chunks);

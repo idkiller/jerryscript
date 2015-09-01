@@ -83,6 +83,18 @@ extern void mem_heap_get_stats (mem_heap_stats_t *out_heap_stats_p);
 extern void mem_heap_stats_reset_peak (void);
 #endif /* MEM_STATS */
 
+#ifdef JERRY_VALGRIND
+
+extern void mem_heap_valgrind_mempool_request (void);
+
+#define MEM_HEAP_VALGRIND_MEMPOOL_REQUEST() mem_heap_valgrind_mempool_request ()
+
+#else /* JERRY_VALGRIND */
+
+#define MEM_HEAP_VALGRIND_MEMPOOL_REQUEST()
+
+#endif /* JERRY_VALGRIND */
+
 /**
  * Define a local array variable and allocate memory for the array on the heap.
  *
