@@ -22,7 +22,95 @@
 /**
  * Register allocator's counter
  */
-static vm_idx_t jsp_reg_next;
+// static vm_idx_t jsp_reg_next;
+
+
+/**
+ * Bit field, indicating which of registers are free or occupied. Each bit of the buffer corresponds to one
+ * general register in the following way:
+ *
+ * free_regs_mask[0] bit 0   -   VM_REG_GENERAL_FIRST
+ * free_regs_mask[0] bit 1   -   VM_REG_GENERAL_FIRST + 1
+ * ....
+ * free_regs_mask[0] bit 31  -   VM_REG_GENERAL_FIRST + 31
+ * free_regs_mask[1] bit 0   -   VM_REG_GENERAL_FIRST + 32
+ * ....
+ *
+ * If bit is set to 1, the corresponding register is occupied, otherwise it could be used.
+ */
+static uint32_t free_regs_mask[4];
+
+JERRY_STATIC_ASSERT (sizeof (free_regs_mask) * JERRY_BITSINBYTE >= VM_REG_GENERAL_LAST - VM_REG_GENERAL_FIRST);
+
+#define REGS_IN_DWORD 32
+#define GENERALS_REGS_COUNT (VM_REG_GENERAL_LAST - VM_REG_GENERAL_FIRST + 1)
+
+/**
+ * Status of a general register: free/occupied
+ */
+typedef enum
+{
+  REG_FREE,
+  REG_OCCUPIED
+} reg_status_t;
+
+/**
+ * Sets status of a general register in free_regs_mask bit field
+ *
+ */
+static void
+set_reg_status (vm_idx_t reg, /**< register number, register out of the range VM_REG_GENERAL_FIRST -
+                            * VM_REG_GENERAL_LAST are ignored */
+                reg_status_t reg_status) /**< status of the register */
+{
+  if (!(reg >= VM_REG_GENERAL_FIRST && reg <= VM_REG_GENERAL_LAST))
+  {
+    return;
+  }
+
+  uint32_t *free_regs_mask_p;
+ 
+  int index = (reg - VM_REG_GENERAL_FIRST) / REGS_IN_DWORD;
+  reg = (vm_idx_t) (reg - REGS_IN_DWORD * index);
+  free_regs_mask_p = &free_regs_mask[index];
+
+  uint32_t shifted_value = (uint32_t) 1 << reg;
+  if (reg_status)
+  {
+    (*free_regs_mask_p) |= shifted_value;
+  }
+  else
+  {
+    (*free_regs_mask_p) &= ~shifted_value;
+  }
+} /* set_reg_status */
+
+/**
+ * Find a free register in free_regs_mask bit field
+ */
+static vm_idx_t
+find_free_reg (void)
+{
+  for (unsigned int i = 0; i < sizeof (free_regs_mask) / sizeof (free_regs_mask[0]); ++i)
+  {
+    for (vm_idx_t reg = 0; reg < REGS_IN_DWORD && (reg + i * REGS_IN_DWORD) < GENERALS_REGS_COUNT; reg++)
+    {
+      if ((((free_regs_mask[i]) >> reg) & 1) == 0)
+      {
+        free_regs_mask[i] |= (uint32_t) 1 << reg;
+        return (vm_idx_t) (reg + i * REGS_IN_DWORD + VM_REG_GENERAL_FIRST);
+      }
+    }
+  }
+
+  return (vm_idx_t) (VM_REG_GENERAL_LAST + 1);
+} /* find_free_reg */
+
+static void
+clear_regs (void)
+{
+  memset (free_regs_mask, 0, sizeof (uint32_t) * 4);
+}
 
 /**
  * Maximum identifier of a register, allocated for intermediate value storage
@@ -136,6 +224,12 @@ enum
 };
 STATIC_STACK (reg_var_decls, vm_instr_counter_t)
 
+enum
+{
+  reg_map_global_size
+};
+STATIC_STACK (reg_map, uint32_t)
+
 /**
  * Allocate next register for intermediate value
  *
@@ -146,7 +240,10 @@ jsp_alloc_reg_for_temp (void)
 {
   JERRY_ASSERT (jsp_reg_max_for_local_var == VM_IDX_EMPTY);
 
-  vm_idx_t next_reg = jsp_reg_next++;
+  vm_idx_t next_reg = find_free_reg ();
+  set_reg_status (next_reg, REG_FREE);
+
+  // vm_idx_t next_reg = jsp_reg_next++;
 
   if (next_reg > VM_REG_GENERAL_LAST)
   {
@@ -635,7 +732,7 @@ jsp_create_operand_for_in_special_reg (void)
 } /* jsp_create_operand_for_in_special_reg */
 
 bool
-operand_is_empty (jsp_operand_t op)
+operand_is_empty (jsp_operand_t &op)
 {
   return op.is_empty_operand ();
 }
@@ -643,7 +740,9 @@ operand_is_empty (jsp_operand_t op)
 void
 dumper_new_statement (void)
 {
-  jsp_reg_next = VM_REG_GENERAL_FIRST;
+  // jsp_reg_next = VM_REG_GENERAL_FIRST;
+
+  clear_regs ();
 }
 
 void
@@ -651,11 +750,14 @@ dumper_new_scope (void)
 {
   JERRY_ASSERT (jsp_reg_max_for_local_var == VM_IDX_EMPTY);
 
-  STACK_PUSH (jsp_reg_id_stack, jsp_reg_next);
+  STACK_PUSH (reg_map, free_regs_mask[0]);
+  STACK_PUSH (reg_map, free_regs_mask[1]);
+  STACK_PUSH (reg_map, free_regs_mask[2]);
+  STACK_PUSH (reg_map, free_regs_mask[3]);
   STACK_PUSH (jsp_reg_id_stack, jsp_reg_max_for_temps);
 
-  jsp_reg_next = VM_REG_GENERAL_FIRST;
-  jsp_reg_max_for_temps = jsp_reg_next;
+  clear_regs ();
+  jsp_reg_max_for_temps = VM_REG_GENERAL_FIRST;
 }
 
 void
@@ -665,8 +767,14 @@ dumper_finish_scope (void)
 
   jsp_reg_max_for_temps = STACK_TOP (jsp_reg_id_stack);
   STACK_DROP (jsp_reg_id_stack, 1);
-  jsp_reg_next = STACK_TOP (jsp_reg_id_stack);
-  STACK_DROP (jsp_reg_id_stack, 1);
+  free_regs_mask[3] = STACK_TOP (reg_map);
+  STACK_DROP (reg_map, 1);
+  free_regs_mask[2] = STACK_TOP (reg_map);
+  STACK_DROP (reg_map, 1);
+  free_regs_mask[1] = STACK_TOP (reg_map);
+  STACK_DROP (reg_map, 1);
+  free_regs_mask[0] = STACK_TOP (reg_map);
+  STACK_DROP (reg_map, 1);
 }
 
 /**
@@ -688,7 +796,7 @@ dumper_finish_scope (void)
 void
 dumper_start_varg_code_sequence (void)
 {
-  STACK_PUSH (jsp_reg_id_stack, jsp_reg_next);
+  // STACK_PUSH (jsp_reg_id_stack, jsp_reg_next);
 } /* dumper_start_varg_code_sequence */
 
 /**
@@ -700,8 +808,8 @@ dumper_start_varg_code_sequence (void)
 void
 dumper_finish_varg_code_sequence (void)
 {
-  jsp_reg_next = STACK_TOP (jsp_reg_id_stack);
-  STACK_DROP (jsp_reg_id_stack, 1);
+  // jsp_reg_next = STACK_TOP (jsp_reg_id_stack);
+  // STACK_DROP (jsp_reg_id_stack, 1);
 } /* dumper_finish_varg_code_sequence */
 
 /**
@@ -2440,7 +2548,8 @@ dump_retval (jsp_operand_t op)
 void
 dumper_init (void)
 {
-  jsp_reg_next = VM_REG_GENERAL_FIRST;
+  //jsp_reg_next = VM_REG_GENERAL_FIRST;
+  clear_regs ();
   jsp_reg_max_for_temps = VM_REG_GENERAL_FIRST;
   jsp_reg_max_for_local_var = VM_IDX_EMPTY;
 
@@ -2459,6 +2568,7 @@ dumper_init (void)
   STACK_INIT (tries);
   STACK_INIT (jsp_reg_id_stack);
   STACK_INIT (reg_var_decls);
+  STACK_INIT (reg_map);
 }
 
 void
@@ -2479,4 +2589,5 @@ dumper_free (void)
   STACK_FREE (tries);
   STACK_FREE (jsp_reg_id_stack);
   STACK_FREE (reg_var_decls);
+  STACK_FREE (reg_map);
 }

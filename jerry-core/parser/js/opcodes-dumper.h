@@ -50,7 +50,28 @@ public:
 #ifndef JERRY_NDEBUG
     _type = jsp_operand_t::UNINITIALIZED;
 #endif /* !JERRY_NDEBUG */
+    _is_valid = true;
   } /* jsp_operand_t */
+
+  jsp_operand_t (const jsp_operand_t &op)
+  {
+    _type = op._type;
+    _data = op._data;
+    _is_valid = true;
+
+    op._is_valid = false;
+  }
+
+  jsp_operand_t& operator= (const jsp_operand_t &op)
+  {
+    _type = op._type;
+    _data = op._data;
+    _is_valid = true;
+
+    op._is_valid = false;
+
+    return *this;
+  }
 
   /**
    * Construct empty operand
@@ -152,7 +173,7 @@ public:
   bool
   is_empty_operand (void) const
   {
-    JERRY_ASSERT (_type != jsp_operand_t::UNINITIALIZED);
+    JERRY_ASSERT (_type != jsp_operand_t::UNINITIALIZED && _is_valid);
 
     return (_type == jsp_operand_t::EMPTY);
   } /* is_empty_operand */
@@ -165,7 +186,7 @@ public:
   bool
   is_unknown_operand (void) const
   {
-    JERRY_ASSERT (_type != jsp_operand_t::UNINITIALIZED);
+    JERRY_ASSERT (_type != jsp_operand_t::UNINITIALIZED && _is_valid);
 
     return (_type == jsp_operand_t::UNKNOWN);
   } /* is_unknown_operand */
@@ -178,7 +199,7 @@ public:
   bool
   is_idx_const_operand (void) const
   {
-    JERRY_ASSERT (_type != jsp_operand_t::UNINITIALIZED);
+    JERRY_ASSERT (_type != jsp_operand_t::UNINITIALIZED && _is_valid);
 
     return (_type == jsp_operand_t::IDX_CONST);
   } /* is_idx_const_operand */
@@ -191,7 +212,7 @@ public:
   bool
   is_register_operand (void) const
   {
-    JERRY_ASSERT (_type != jsp_operand_t::UNINITIALIZED);
+    JERRY_ASSERT (_type != jsp_operand_t::UNINITIALIZED && _is_valid);
 
     return (_type == jsp_operand_t::TMP);
   } /* is_register_operand */
@@ -204,7 +225,7 @@ public:
   bool
   is_literal_operand (void) const
   {
-    JERRY_ASSERT (_type != jsp_operand_t::UNINITIALIZED);
+    JERRY_ASSERT (_type != jsp_operand_t::UNINITIALIZED && _is_valid);
 
     return (_type == jsp_operand_t::LITERAL);
   } /* is_literal_operand */
@@ -218,7 +239,7 @@ public:
   vm_idx_t
   get_idx (void) const
   {
-    JERRY_ASSERT (_type != jsp_operand_t::UNINITIALIZED);
+    JERRY_ASSERT (_type != jsp_operand_t::UNINITIALIZED && _is_valid);
 
     if (_type == jsp_operand_t::TMP)
     {
@@ -245,7 +266,7 @@ public:
   lit_cpointer_t
   get_literal (void) const
   {
-    JERRY_ASSERT (_type != jsp_operand_t::UNINITIALIZED);
+    JERRY_ASSERT (_type != jsp_operand_t::UNINITIALIZED && _is_valid);
 
     if (_type == jsp_operand_t::TMP)
     {
@@ -271,10 +292,11 @@ public:
   vm_idx_t
   get_idx_const (void) const
   {
-    JERRY_ASSERT (is_idx_const_operand ());
+    JERRY_ASSERT (is_idx_const_operand () && _is_valid);
 
     return _data.idx_const;
   } /* get_idx_const */
+
 private:
   union
   {
@@ -284,6 +306,7 @@ private:
   } _data;
 
   type_t _type; /**< type of operand */
+  mutable bool _is_valid; /**< flag, indicating if the operand was copied */
 };
 
 typedef enum __attr_packed___
@@ -300,7 +323,7 @@ jsp_operand_t empty_operand (void);
 jsp_operand_t literal_operand (lit_cpointer_t);
 jsp_operand_t eval_ret_operand (void);
 jsp_operand_t jsp_create_operand_for_in_special_reg (void);
-bool operand_is_empty (jsp_operand_t);
+bool operand_is_empty (jsp_operand_t &);
 
 void dumper_init (void);
 void dumper_free (void);
