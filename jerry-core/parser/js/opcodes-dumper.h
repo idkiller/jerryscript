@@ -62,6 +62,8 @@ public:
     op._is_valid = false;
   }
 
+  ~jsp_operand_t ();
+
   jsp_operand_t& operator= (const jsp_operand_t &op)
   {
     _type = op._type;

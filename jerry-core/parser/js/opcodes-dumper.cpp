@@ -106,6 +106,14 @@ find_free_reg (void)
   return (vm_idx_t) (VM_REG_GENERAL_LAST + 1);
 } /* find_free_reg */
 
+jsp_operand_t::~jsp_operand_t ()
+{
+  if (_is_valid && _type == TMP)
+  {
+    set_reg_status (_data.uid, REG_FREE);
+  }
+}
+
 static void
 clear_regs (void)
 {
