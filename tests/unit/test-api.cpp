@@ -54,6 +54,7 @@ const char *test_source = (
                            "function throw_reference_error() { "
                            " throw new ReferenceError ();"
                            "} "
+                           "p = {'alpha':32, 'bravo':false, 'charlie':{}, 'delta':123.45, 'echo':'foobar'}"
                            );
 
 bool test_api_is_free_callback_was_called = false;
@@ -222,6 +223,48 @@ const jerry_api_char_ptr_t magic_string_items[] =
 #undef JERRY_MAGIC_STRING_DEF
 };
 
+static bool foreach (const jerry_api_string_t *name,
+                     const jerry_api_value_t *value, void *user_data)
+{
+  char str_buf_p[128];
+  ssize_t sz = jerry_api_string_to_char_buffer (name, (jerry_api_char_t *)str_buf_p, 128);
+  str_buf_p[sz] = '\0';
+  
+  if (!strncmp (str_buf_p, "alpha", (size_t)sz))
+  {
+    JERRY_ASSERT (value->type == JERRY_API_DATA_TYPE_FLOAT64);
+    JERRY_ASSERT (value->v_float64 == 32);
+  }
+  else if (!strncmp (str_buf_p, "bravo", (size_t)sz))
+  {
+    JERRY_ASSERT (value->type == JERRY_API_DATA_TYPE_BOOLEAN);
+    JERRY_ASSERT (value->v_bool == false);
+  }
+  else if (!strncmp (str_buf_p, "charlie", (size_t)sz))
+  {
+    JERRY_ASSERT (value->type == JERRY_API_DATA_TYPE_OBJECT);
+  }
+  else if (!strncmp (str_buf_p, "delta", (size_t)sz))
+  {
+    JERRY_ASSERT (value->type == JERRY_API_DATA_TYPE_FLOAT64);
+    JERRY_ASSERT (value->v_float64 == 123.45);
+  }
+  else if (!strncmp (str_buf_p, "echo", (size_t)sz))
+  {
+    JERRY_ASSERT (value->type == JERRY_API_DATA_TYPE_STRING);
+    ssize_t echo_sz = jerry_api_string_to_char_buffer (
+        value->v_string, (jerry_api_char_t *)str_buf_p, 128);
+    str_buf_p[echo_sz] = '\0';
+    JERRY_ASSERT (!strncmp (str_buf_p, "foobar", (size_t)echo_sz));
+  }
+  else 
+  {
+    JERRY_ASSERT (false);
+  }
+
+  JERRY_ASSERT(!strncmp ((const char*)user_data, "user_data", 9));
+  return true;
+}
 
 
 int
@@ -233,7 +276,7 @@ main (void)
 
   bool is_ok, is_exception;
   ssize_t sz;
-  jerry_api_value_t val_t, val_foo, val_bar, val_A, val_A_prototype, val_a, val_a_foo, val_value_field;
+  jerry_api_value_t val_t, val_foo, val_bar, val_A, val_A_prototype, val_a, val_a_foo, val_value_field, val_p;
   jerry_api_value_t val_external, val_external_construct, val_call_external;
   jerry_api_object_t* global_obj_p, *obj_p;
   jerry_api_object_t* external_func_p, *external_construct_p;
@@ -342,6 +385,11 @@ main (void)
                 && res.type == JERRY_API_DATA_TYPE_FLOAT64
                 && res.v_float64 == 12.0);
   jerry_api_release_value (&res);
+
+  // foreach properties
+  jerry_api_get_object_field_value (global_obj_p, (jerry_api_char_t *) "p", &val_p);
+  jerry_api_foreach_object_field (val_p.v_object, foreach, (void*)"user_data");
+  jerry_api_release_value(&val_p);
 
   // Get a.foo
   is_ok = jerry_api_get_object_field_value (val_a.v_object, (jerry_api_char_t *) "foo", &val_a_foo);

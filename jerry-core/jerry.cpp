@@ -899,6 +899,64 @@ bool jerry_api_get_object_field_value (jerry_api_object_t *object_p,
 }
 
 /**
+ * Applies the given function to the every fields in the objects
+ *
+ */
+void
+jerry_api_foreach_object_field(jerry_api_object_t *object_p, /**< object */
+                               jerry_object_field_foreach_t foreach_p, /**< foreach function */
+                               void *user_data) /**< user data for foreach function */
+{
+  jerry_assert_api_available ();
+
+  for (ecma_property_t *property_p = ecma_get_property_list (object_p);
+       property_p != NULL;
+       property_p = ECMA_GET_POINTER (ecma_property_t, property_p->next_property_p))
+  {
+    if (!ecma_is_property_enumerable (property_p)) continue;
+
+    ecma_string_t *property_name_p;
+    if (property_p->type == ECMA_PROPERTY_NAMEDDATA)
+    {
+      property_name_p = ECMA_GET_NON_NULL_POINTER (ecma_string_t,
+                                                   property_p->u.named_data_property.name_p);
+    }
+    else if (property_p->type == ECMA_PROPERTY_NAMEDACCESSOR)
+    {
+      property_name_p = ECMA_GET_NON_NULL_POINTER (ecma_string_t,
+                                                   property_p->u.named_accessor_property.name_p);
+    }
+    else
+    {
+      continue;
+    }
+
+    jerry_api_value_t field_value;
+    ecma_completion_value_t get_completion = ecma_op_object_get (object_p,
+                                                                 property_name_p);
+    if (ecma_is_completion_value_normal (get_completion))
+    {
+      ecma_value_t val = ecma_get_completion_value_value (get_completion);
+      jerry_api_convert_ecma_value_to_api_value (&field_value, val);
+    }
+    else
+    {
+      JERRY_ASSERT (ecma_is_completion_value_throw (get_completion));
+      ecma_free_completion_value (get_completion);
+      break;
+    }
+    ecma_free_completion_value (get_completion);
+
+    if (!foreach_p(property_name_p, &field_value, user_data))
+    {
+      jerry_api_release_value(&field_value);
+      break;
+    }
+    jerry_api_release_value(&field_value);
+  }
+}
+
+/**
  * Get value of field in the specified object
  *
  * Note:
